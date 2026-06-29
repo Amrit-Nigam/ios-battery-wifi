@@ -1,0 +1,8 @@
+# Secrets — device private keys & identifiers, NEVER commit
+.pairrecord.plist
+config.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
