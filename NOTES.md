@@ -54,7 +54,7 @@ The chain:
 Earbuds % = min(L, R). **Charging state not available** (macOS exposes no flag;
 AirBattery hardcodes `isCharging: 0`).
 
-## iPhone — older methods (kept for reference; superseded by the breakthrough above)
+## iPhone — older methods (superseded by the wireless breakthrough above; dead ends, kept as a record)
 
 ### libimobiledevice over USB — ✅ but only while cabled
 `ideviceinfo -q com.apple.mobile.battery` → `BatteryCurrentCapacity` + `BatteryIsCharging`.
@@ -65,15 +65,14 @@ Local Network privacy gates the C CLI's mDNS browse. **Superseded** — use
 
 ### Apple Shortcut push — ✅ works anywhere on Wi-Fi, carries charging
 Shortcut: Get Battery Level → Get Contents of URL `…/battery/phone?level=<BatteryLevel>&charging=1`.
-Needs iPhone-side automation setup. Good wireless fallback; no Mac permission needed.
+Needs iPhone-side automation setup. **Dropped** — the wireless reader needs no phone-side setup.
 
 ### Continuity / Instant Hotspot — ⚠️ passive level only, near the Mac
-Parse unified log for `SFRemoteHotspotDevice … battery life: N`. No charging.
+Parse unified log for `SFRemoteHotspotDevice … battery life: N`. No charging. **Dropped.**
 
 ---
 
 ## Files in this repo
 - `iphone_wireless.py` — ✅ the wireless reader (level + charging, no cable)
 - `save_pairrecord.py` — one-time USB pairing-record capture
-- `iphone.py`          — USB / hotspot quick test
-- `serve.py`           — dashboard server (Mac + iPhone + AirPods), layered sources
+- `serve.py`           — dashboard server (Mac + iPhone via the wireless reader + AirPods)

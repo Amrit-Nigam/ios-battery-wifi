@@ -97,6 +97,11 @@ async def read_battery(verbose=False, wait=60.0):
 
 
 async def main():
+    # --json: print {"level","charging","ip"} (or {} if unreachable) for the companion server.
+    if "--json" in sys.argv:
+        r = await read_battery(wait=8)
+        print(json.dumps(r or {}))
+        return
     r = await read_battery(verbose="-v" in sys.argv)
     if not r:
         print("❌ couldn't reach iPhone — make sure it's awake on the same Wi-Fi.")

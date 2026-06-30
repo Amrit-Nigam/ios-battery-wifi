@@ -58,5 +58,4 @@ python3 -m venv .venv
 | `save_pairrecord.py` | one-time USB capture of pairing record + config |
 | `HOW_IT_WORKS.md`    | how it works + how it differs from libimobiledevice |
 | `serve.py`           | optional dashboard (Mac + iPhone + AirPods) |
-| `iphone.py`          | USB / Continuity-hotspot quick test |
 | `NOTES.md`           | log of every method tried, what worked, dead ends |
