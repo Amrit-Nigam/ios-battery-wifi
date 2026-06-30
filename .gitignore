@@ -6,3 +6,6 @@ config.json
 .venv/
 __pycache__/
 *.pyc
+
+# macOS app build artifacts
+iPhoneClaudeBar/build/
