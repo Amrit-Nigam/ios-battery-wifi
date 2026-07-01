@@ -21,7 +21,9 @@ Run:  .venv/bin/python iphone_wireless.py [-v]
 import asyncio
 import json
 import plistlib
+import re
 import socket
+import subprocess
 import sys
 from pathlib import Path
 
@@ -40,6 +42,23 @@ def load_config():
     return json.loads(CONFIG_FILE.read_text())
 
 
+def wake_phone(hostname):
+    """Nudge a Wi-Fi-sleeping iPhone so it re-announces and re-opens its lockdown port.
+
+    When the phone is locked its Wi-Fi radio sleeps and it stops answering pings/TCP.
+    An mDNS query for its _apple-mobdev2 advert (which it always services) pokes the
+    radio awake; getaddrinfo() below does the same for the .local name. Both are
+    best-effort and time-boxed — dns-sd never exits on its own, so the 2s timeout is
+    the mechanism (the query has already gone out by then). Empirically this is what
+    turns an unreachable phone reachable within a poll or two.
+    """
+    try:
+        subprocess.run(["dns-sd", "-B", "_apple-mobdev2._tcp"],
+                       capture_output=True, timeout=2)
+    except Exception:
+        pass
+
+
 def resolve_ip(hostname, fallback):
     """Current Wi-Fi IP from the phone's .local name, else the saved fallback."""
     try:
@@ -51,6 +70,30 @@ def resolve_ip(hostname, fallback):
     except Exception:
         pass
     return fallback
+
+
+def read_via_libimobiledevice(udid):
+    """Fallback reader: libimobiledevice over the network (`ideviceinfo -n`).
+
+    Independent of the pymobiledevice3 / port-62078 path — the two mechanisms miss the
+    phone's brief Wi-Fi wake-bursts at different moments, so trying both roughly doubles
+    the odds any single poll lands a reading. IP-independent (usbmuxd finds the phone by
+    UDID via Bonjour). Returns None on any failure; never raises.
+    """
+    try:
+        out = subprocess.run(
+            ["ideviceinfo", "-n", "-u", udid, "-q", "com.apple.mobile.battery"],
+            capture_output=True, text=True, timeout=6,
+        ).stdout
+    except Exception:
+        return None
+    m = re.search(r"BatteryCurrentCapacity:\s*(\d+)", out)
+    if not m:
+        return None
+    chg = re.search(r"BatteryIsCharging:\s*(\w+)", out)
+    return {"level": int(m.group(1)),
+            "charging": bool(chg and chg.group(1).lower() == "true"),
+            "ip": "wifi (libimobiledevice)"}
 
 
 def port_open(ip, timeout=0.4):
@@ -78,6 +121,9 @@ async def read_battery(verbose=False, wait=60.0):
         sys.exit("No .pairrecord.plist — plug in once and run save_pairrecord.py first.")
     cfg = load_config()
     pair_record = plistlib.load(open(PAIR_FILE, "rb"))
+    udid = cfg["udid"]
+    # Poke the radio awake first, then resolve — a sleeping phone won't answer either otherwise.
+    wake_phone(cfg["hostname"])
     ip = resolve_ip(cfg["hostname"], cfg.get("fallback_ip"))
     if not ip:
         sys.exit("Could not resolve the phone IP and no fallback_ip set in config.json.")
@@ -85,12 +131,17 @@ async def read_battery(verbose=False, wait=60.0):
         print(f"  probing {ip}:{LOCKDOWN_PORT} for up to {wait:.0f}s ...")
     waited = 0.0
     while waited < wait:
+        # Primary: plain lockdown-over-TCP (level + charging, no service start).
         if port_open(ip):
             try:
-                return await _attempt(ip, cfg["udid"], pair_record)
+                return await _attempt(ip, udid, pair_record)
             except Exception as e:
                 if verbose:
                     print(f"  ✗ handshake {type(e).__name__}")
+        # Fallback: libimobiledevice's network path catches wake-bursts the probe above misses.
+        alt = read_via_libimobiledevice(udid)
+        if alt:
+            return alt
         await asyncio.sleep(0.6)
         waited += 1.0
     return None
@@ -99,7 +150,7 @@ async def read_battery(verbose=False, wait=60.0):
 async def main():
     # --json: print {"level","charging","ip"} (or {} if unreachable) for the companion server.
     if "--json" in sys.argv:
-        r = await read_battery(wait=8)
+        r = await read_battery(wait=15)
         print(json.dumps(r or {}))
         return
     r = await read_battery(verbose="-v" in sys.argv)
