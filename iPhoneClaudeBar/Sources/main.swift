@@ -56,71 +56,66 @@ enum Bloom {
     }
 }
 
-// ── Pixel "brew" loader (coffee cup + rising steam) — the idle animation ──────────────────────
-// Ported from the supplied script. Its art color (#1a1a18) is near-black, so we render it as a
-// template (white masked by the script's per-pixel alphas) and let the menu bar tint it to a
-// visible foreground color.
-enum Brew {
-    static func image(time a: Double, barHeight: CGFloat) -> NSImage {
-        let ncell: CGFloat = 4
-        let padX: CGFloat = 1                   // horizontal breathing room
-        let minX: CGFloat = -3, maxX: CGFloat = 5
-        // Frame the box SYMMETRICALLY around the cup's center (yJS 1.5) so the cup lands on the
-        // menu-bar text line. Steam rises above; equal empty rows below balance it.
-        let frameTop: CGFloat = -4              // steam clipped above this
-        let frameBottom: CGFloat = 7            // empty rows below -> cup centered (center of -4..7 = 1.5)
-        let cols = Int(maxX - minX) + 1
-        let rows = Int(frameBottom - frameTop) + 1
-        let box = NSSize(width: (CGFloat(cols) + 2 * padX) * ncell, height: CGFloat(rows) * ncell)
-        let img = NSImage(size: box)
+// ── WanderingEyes loader — the idle animation ─────────────────────────────────────────────────
+// Port of the supplied React <WanderingEyes>: two eyes whose pupils glance left, right and down on
+// a 10s loop, with quick blinks (the eyes squash vertically). Rendered as a template (white masked
+// by alpha) so the menu bar tints it to the foreground color — black on light bars, white on dark.
+enum WanderingEyes {
+    // Pupil offset in units of `travel`, as fractions in [-1, 1]: (x: +right, y: +down).
+    static func offset(_ t: Double) -> (Double, Double) {
+        func lerp(_ a: (Double, Double), _ b: (Double, Double), _ f: Double) -> (Double, Double) {
+            (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f)
+        }
+        let c = (0.0, 0.0), l = (-1.0, 0.0), r = (1.0, 0.0), d = (0.0, 1.0)
+        switch t {
+        case ..<0.10: return c
+        case ..<0.13: return lerp(c, l, (t - 0.10) / 0.03)
+        case ..<0.40: return l
+        case ..<0.43: return lerp(l, r, (t - 0.40) / 0.03)
+        case ..<0.70: return r
+        case ..<0.73: return lerp(r, d, (t - 0.70) / 0.03)
+        case ..<0.90: return d
+        case ..<0.93: return lerp(d, c, (t - 0.90) / 0.03)
+        default: return c
+        }
+    }
+
+    // Eye-height multiplier: dips to 0.375 at each blink instant, 1.0 otherwise.
+    static func blink(_ t: Double) -> Double {
+        let p = t * 100
+        var f = 1.0
+        for c in [11.0, 21, 41, 61, 71, 91, 99] where abs(p - c) < 1 {
+            f = min(f, 0.375 + (1 - 0.375) * abs(p - c))
+        }
+        return f
+    }
+
+    static func image(time: Double, height: CGFloat) -> NSImage {
+        let dur = 10000.0
+        let t = time.truncatingRemainder(dividingBy: dur) / dur
+        let eyeD = (height * 0.66).rounded()
+        let gap = max(2, (height * 0.16).rounded())
+        let pupilD = (eyeD * 0.5).rounded()
+        let travel = eyeD * 0.22
+        let boxW = eyeD * 2 + gap
+        let (ox, oy) = offset(t)
+        let bf = CGFloat(blink(t))
+        let img = NSImage(size: NSSize(width: boxW, height: height))
         img.lockFocus()
-        NSGraphicsContext.current?.imageInterpolation = .none
-
-        func cell(_ x: CGFloat, _ y: CGFloat, _ alpha: Double) {
-            if y < frameTop { return }
-            NSColor(white: 1, alpha: CGFloat(min(1, max(0, alpha)))).setFill()
-            let px = (((x - minX) + padX) * ncell).rounded()
-            let py = ((frameBottom - y) * ncell).rounded()   // flip: steam (negative y) rises up
-            NSBezierPath(rect: NSRect(x: px, y: py, width: ncell, height: ncell)).fill()
-        }
-
-        // Cup: body, rim, bottom, handle (static alphas).
-        for y in 0...3 { for x in -3...3 { cell(CGFloat(x), CGFloat(y), 0.62) } }
-        for x in -3...3 { cell(CGFloat(x), -1, 0.72) }
-        for x in -2...2 { cell(CGFloat(x), 4, 0.65) }
-        for (x, y) in [(4,0),(5,0),(5,1),(5,2),(5,3),(5,4),(4,4),(4,1),(4,3)] {
-            cell(CGFloat(x), CGFloat(y), 0.58)
-        }
-
-        // Three wavering steam columns rising from the cup.
-        let i = 7.0
-        let columns: [(x: Double, speed: Double, ph: Double)] = [
-            (-1.5, 0.00075, 0.0), (0.0, 0.0007, 2.2), (1.5, 0.0008, 4.4),
-        ]
-        for col in columns {
-            let M = a * col.speed + col.ph
-            let f = (sin(M) + 1) / 2
-            let d = Int((f * i).rounded())
-            if d < 0 { continue }
-            for e in 0...d {
-                let aa = Double(e) / i
-                let u = 1.5 * sin(1.2 * M + aa * Double.pi * 1.8)
-                let s = (1 - aa) * 0.48 * f
-                if s <= 0.03 { continue }
-                cell(CGFloat(col.x + u), CGFloat(-2 - e), s)
-                if e > 0 {                                  // bridge horizontal gaps between puffs
-                    let f2 = 1.5 * sin(1.2 * M + (aa - 1 / i) * Double.pi * 1.8)
-                    if abs((u - f2).rounded()) > 1 {
-                        cell(CGFloat(col.x + (u + f2) / 2), CGFloat(-2 - e), 0.65 * s)
-                    }
-                }
-            }
+        for i in 0..<2 {
+            let cx = eyeD / 2 + CGFloat(i) * (eyeD + gap)
+            let cy = height / 2
+            let eh = eyeD * bf
+            NSColor(white: 1, alpha: 0.40).setFill()    // eye white — dim ring (template-tinted)
+            NSBezierPath(ovalIn: NSRect(x: cx - eyeD / 2, y: cy - eh / 2, width: eyeD, height: eh)).fill()
+            let px = cx + CGFloat(ox) * travel
+            let py = cy - CGFloat(oy) * travel          // +down -> lower y in AppKit
+            let ph = pupilD * bf
+            NSColor(white: 1, alpha: 1).setFill()       // solid pupil
+            NSBezierPath(ovalIn: NSRect(x: px - pupilD / 2, y: py - ph / 2, width: pupilD, height: ph)).fill()
         }
         img.unlockFocus()
         img.isTemplate = true
-        // Use near-full bar height; the cup is centered in the box, so it aligns with the text line.
-        let h = (barHeight - 2).rounded()
-        img.size = NSSize(width: (h * box.width / box.height).rounded(), height: h)
         return img
     }
 }
@@ -326,7 +321,7 @@ final class Controller: NSObject, NSMenuDelegate {
         case "thinking", "tool":      bloomColor = COL_CODING; idleMode = false
         case "waiting", "permission": bloomColor = COL_ALERT;  idleMode = false
         case "done":                  bloomColor = COL_DONE;   idleMode = false
-        default:                      idleMode = true                 // idle / offline -> brew
+        default:                      idleMode = true                 // idle / offline -> eyes
         }
         // One-shot sound when the state transitions into "done" or "needs you".
         if st != lastState {
@@ -334,7 +329,8 @@ final class Controller: NSObject, NSMenuDelegate {
             else if st == "waiting" || st == "permission" { play("Ping") }
             lastState = st
         }
-        baseLabel = reachable ? (claude?.label ?? claude?.state.capitalized ?? "—") : "offline"
+        // Idle/offline shows just the eyes — no status word. Busy states keep their label.
+        baseLabel = idleMode ? "" : (claude?.label ?? claude?.state.capitalized ?? "—")
         claudeStartedAt = reachable ? (claude?.startedAt ?? 0) : 0
         applyClaudeTitle()
     }
@@ -345,7 +341,7 @@ final class Controller: NSObject, NSMenuDelegate {
             let e = Int(Date().timeIntervalSince1970 - claudeStartedAt)
             if e >= 0 { t += "  " + fmtElapsed(e) }
         }
-        claudeItem.button?.title = " " + t
+        claudeItem.button?.title = t.isEmpty ? "" : " " + t
     }
 
     func fmtElapsed(_ s: Int) -> String {
@@ -375,7 +371,7 @@ final class Controller: NSObject, NSMenuDelegate {
         let t = Date().timeIntervalSince(started) * 1000
         let h = (barH - 1).rounded()
         claudeItem.button?.image = idleMode
-            ? Brew.image(time: t, barHeight: barH)
+            ? WanderingEyes.image(time: t, height: h)
             : Bloom.image(time: t, rgb: bloomColor, height: h)
 
         // Advance the elapsed timer once per second while a run is active.

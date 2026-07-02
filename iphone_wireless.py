@@ -42,21 +42,38 @@ def load_config():
     return json.loads(CONFIG_FILE.read_text())
 
 
-def wake_phone(hostname):
+def wake_phone(hostname, ip=None):
     """Nudge a Wi-Fi-sleeping iPhone so it re-announces and re-opens its lockdown port.
 
-    When the phone is locked its Wi-Fi radio sleeps and it stops answering pings/TCP.
-    An mDNS query for its _apple-mobdev2 advert (which it always services) pokes the
-    radio awake; getaddrinfo() below does the same for the .local name. Both are
-    best-effort and time-boxed — dns-sd never exits on its own, so the 2s timeout is
-    the mechanism (the query has already gone out by then). Empirically this is what
-    turns an unreachable phone reachable within a poll or two.
+    When the phone is locked its Wi-Fi radio dozes and stops answering pings/TCP (but
+    stays *associated* to the AP). Several cheap, independent pokes raise the odds one
+    lands during a doze-wake burst:
+      - an mDNS browse for _apple-mobdev2 (the advert the phone always services),
+      - a fresh multicast resolve of the .local name (bypasses a stale sleep-proxy
+        record so we also pick up an IP change), and
+      - a couple of bare TCP SYNs at the lockdown port (a connect attempt is itself a
+        wake stimulus and primes the neighbor/ARP cache).
+    All are best-effort and time-boxed; dns-sd never self-exits, so the timeout IS the
+    mechanism — the query has already gone out on the wire by then. Note: none of this
+    can wake a phone that has *fully left* the network (ARP incomplete) — only the phone
+    rejoining fixes that. This targets the far more common doze case.
     """
     try:
         subprocess.run(["dns-sd", "-B", "_apple-mobdev2._tcp"],
-                       capture_output=True, timeout=2)
+                       capture_output=True, timeout=1.5)
     except Exception:
         pass
+    # Re-resolve fresh (also refreshes the OS mDNS cache for the next resolve_ip call).
+    try:
+        socket.getaddrinfo(hostname, LOCKDOWN_PORT, proto=socket.IPPROTO_TCP)
+    except Exception:
+        pass
+    # Bare SYNs at the lockdown port — a connection attempt is a wake stimulus in itself.
+    for target in filter(None, (ip,)):
+        try:
+            socket.create_connection((target, LOCKDOWN_PORT), timeout=0.4).close()
+        except OSError:
+            pass
 
 
 def resolve_ip(hostname, fallback):
@@ -70,6 +87,29 @@ def resolve_ip(hostname, fallback):
     except Exception:
         pass
     return fallback
+
+
+def default_gateway():
+    """The default route's gateway IP — this IS the phone when the Mac is on its hotspot."""
+    try:
+        out = subprocess.run(["route", "-n", "get", "default"],
+                             capture_output=True, text=True, timeout=2).stdout
+        m = re.search(r"gateway:\s*([0-9.]+)", out)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def candidate_ips(hostname, fallback):
+    """Ordered, de-duped IPs to try for the phone: mDNS first, then the default gateway
+    (covers Personal Hotspot, where the phone is the router at e.g. 172.20.10.1), then
+    the saved fallback. On home Wi-Fi the gateway is the router and just refuses fast."""
+    seen, out = set(), []
+    for ip in (resolve_ip(hostname, None), default_gateway(), fallback):
+        if ip and ip not in seen:
+            seen.add(ip)
+            out.append(ip)
+    return out
 
 
 def read_via_libimobiledevice(udid):
@@ -122,26 +162,41 @@ async def read_battery(verbose=False, wait=60.0):
     cfg = load_config()
     pair_record = plistlib.load(open(PAIR_FILE, "rb"))
     udid = cfg["udid"]
+    hostname, fallback = cfg["hostname"], cfg.get("fallback_ip")
     # Poke the radio awake first, then resolve — a sleeping phone won't answer either otherwise.
-    wake_phone(cfg["hostname"])
-    ip = resolve_ip(cfg["hostname"], cfg.get("fallback_ip"))
-    if not ip:
+    wake_phone(hostname)
+    ips = candidate_ips(hostname, fallback)
+    if not ips:
         sys.exit("Could not resolve the phone IP and no fallback_ip set in config.json.")
     if verbose:
-        print(f"  probing {ip}:{LOCKDOWN_PORT} for up to {wait:.0f}s ...")
+        print(f"  probing {ips} :{LOCKDOWN_PORT} for up to {wait:.0f}s ...")
     waited = 0.0
+    since_nudge = 0.0
     while waited < wait:
-        # Primary: plain lockdown-over-TCP (level + charging, no service start).
-        if port_open(ip):
-            try:
-                return await _attempt(ip, udid, pair_record)
-            except Exception as e:
-                if verbose:
-                    print(f"  ✗ handshake {type(e).__name__}")
+        # Primary: plain lockdown-over-TCP (level + charging, no service start). Try each
+        # candidate — mDNS IP, then the default gateway (the phone when on its hotspot).
+        for ip in ips:
+            if port_open(ip):
+                try:
+                    return await _attempt(ip, udid, pair_record)
+                except Exception as e:
+                    if verbose:
+                        print(f"  ✗ handshake {type(e).__name__} @ {ip}")
         # Fallback: libimobiledevice's network path catches wake-bursts the probe above misses.
         alt = read_via_libimobiledevice(udid)
         if alt:
             return alt
+        # Re-nudge and re-resolve every ~5s: one poke at the start rarely coincides with a
+        # doze-wake burst, and re-resolving picks up a DHCP/hotspot address change mid-wait.
+        since_nudge += 1.0
+        if since_nudge >= 5.0:
+            since_nudge = 0.0
+            wake_phone(hostname, ips[0])
+            new_ips = candidate_ips(hostname, fallback)
+            if new_ips and new_ips != ips:
+                if verbose:
+                    print(f"  ↻ candidates {ips} → {new_ips}")
+                ips = new_ips
         await asyncio.sleep(0.6)
         waited += 1.0
     return None
