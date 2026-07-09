@@ -4,12 +4,12 @@ import ServiceManagement
 // iPhone & Claude — a menu-bar app showing the iPhone's battery next to a live pixel "bloom"
 // loader whose color reflects Claude Code's state, plus the current status text.
 //
-//   GET http://127.0.0.1:4040/battery -> { phone: { level, charging, present, stale, source } }
-//   GET http://127.0.0.1:4040/status  -> { state, label, tool, project }
+//   GET http://127.0.0.1:4770/battery -> { phone: { level, charging, present, stale, source } }
+//   GET http://127.0.0.1:4770/status  -> { state, label, tool, project }
 //
 // No Mac battery (macOS shows that natively). The creature is drawn procedurally — no GIFs.
 
-let SERVER = "http://127.0.0.1:4040"
+let SERVER = "http://127.0.0.1:4770"
 let POLL_SECONDS = 2.0
 let ANIM_FPS = 30.0
 
@@ -214,17 +214,24 @@ final class ToggleView: NSView {
 
 // ── Parsed state ──────────────────────────────────────────────────────────────────────────────
 struct Phone { var level: Int; var charging: Bool; var present: Bool; var stale: Bool; var source: String? }
+struct Airpods { var earbuds: Int?; var caseLevel: Int?; var connected: Bool }
 struct Claude { var state: String; var label: String?; var tool: String?; var project: String?; var startedAt: Double }
 
 // ── Controller ────────────────────────────────────────────────────────────────────────────────
 final class Controller: NSObject, NSMenuDelegate {
-    let phoneItem  = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    let claudeItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let phoneItem   = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let airpodsItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let claudeItem  = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
     let barH = NSStatusBar.system.thickness
     lazy var zapIcon: NSImage = lucideZap(height: (barH * 0.62).rounded())
     lazy var phoneIcon: NSImage? = {
         let img = NSImage(systemSymbolName: "iphone", accessibilityDescription: "iPhone")
+        img?.isTemplate = true
+        return img
+    }()
+    lazy var airpodsIcon: NSImage? = {
+        let img = NSImage(systemSymbolName: "airpods", accessibilityDescription: "AirPods")
         img?.isTemplate = true
         return img
     }()
@@ -236,12 +243,15 @@ final class Controller: NSObject, NSMenuDelegate {
     var animTimer: Timer?
 
     var phone: Phone?
+    var airpods: Airpods?
     var claude: Claude?
     var reachable = false
 
     var lastState: String?                       // for one-shot sound on transition
     var soundOn = UserDefaults.standard.object(forKey: "soundOn") as? Bool ?? true
     var showTimer = UserDefaults.standard.object(forKey: "showTimer") as? Bool ?? true
+    var showPhone = UserDefaults.standard.object(forKey: "showPhone") as? Bool ?? true
+    var showAirpods = UserDefaults.standard.object(forKey: "showAirpods") as? Bool ?? true
 
     var baseLabel = "—"                          // status text without the elapsed timer
     var claudeStartedAt = 0.0                    // unix start of the current busy run (0 = not busy)
@@ -253,6 +263,12 @@ final class Controller: NSObject, NSMenuDelegate {
         phoneItem.button?.imagePosition = .imageLeft
         phoneItem.button?.image = phoneIcon
         phoneItem.button?.title = " …"
+        phoneItem.isVisible = showPhone
+        airpodsItem.menu = makeMenu()
+        airpodsItem.button?.imagePosition = .imageLeft
+        airpodsItem.button?.image = airpodsIcon
+        airpodsItem.button?.title = " …"
+        airpodsItem.isVisible = showAirpods
         claudeItem.button?.imagePosition = .imageLeft
         renderClaude()
 
@@ -275,8 +291,13 @@ final class Controller: NSObject, NSMenuDelegate {
                                        stale: p["stale"] as? Bool ?? false,
                                        source: p["source"] as? String)
                 } else { self.phone = nil }
+                if let a = obj["airpods"] as? [String: Any] {
+                    self.airpods = Airpods(earbuds: a["earbuds"] as? Int,
+                                           caseLevel: a["case"] as? Int,
+                                           connected: a["connected"] as? Bool ?? false)
+                } else { self.airpods = nil }
             } else { self.reachable = false }
-            DispatchQueue.main.async { self.renderPhone() }
+            DispatchQueue.main.async { self.renderPhone(); self.renderAirpods() }
         }
         fetch("/status") { [weak self] obj in
             guard let self = self else { return }
@@ -306,12 +327,24 @@ final class Controller: NSObject, NSMenuDelegate {
     func renderPhone() {
         guard let b = phoneItem.button else { return }
         if !reachable {
-            b.image = phoneIcon; b.title = " 4040?"
+            b.image = phoneIcon; b.title = " 4770?"
         } else if let p = phone, p.present {
             b.image = p.charging ? zapIcon : phoneIcon   // charging glyph replaces the phone
             b.title = " \(p.level)%"
         } else {
             b.image = phoneIcon; b.title = " —"
+        }
+    }
+
+    func renderAirpods() {
+        guard let b = airpodsItem.button else { return }
+        b.image = airpodsIcon
+        if !reachable {
+            b.title = " 4770?"
+        } else if let a = airpods, a.connected, let e = a.earbuds {
+            b.title = " \(e)%"
+        } else {
+            b.title = " —"
         }
     }
 
@@ -399,6 +432,14 @@ final class Controller: NSObject, NSMenuDelegate {
             menu.addItem(info(s))
         } else { menu.addItem(info("Unreachable")) }
 
+        menu.addItem(header("AirPods"))
+        if !reachable { menu.addItem(info("Server unreachable")) }
+        else if let a = airpods, a.connected {
+            var s = a.earbuds.map { "\($0)%" } ?? "—"
+            if let c = a.caseLevel { s += " · case \(c)%" }
+            menu.addItem(info(s))
+        } else { menu.addItem(info("Not connected")) }
+
         menu.addItem(header("Claude"))
         if let c = claude, reachable {
             var s = c.label ?? c.state.capitalized
@@ -412,6 +453,16 @@ final class Controller: NSObject, NSMenuDelegate {
         } else { menu.addItem(info("Offline")) }
 
         menu.addItem(header("Settings"))
+        menu.addItem(toggleRow(title: "Show phone battery", isOn: showPhone) { [weak self] on in
+            self?.showPhone = on
+            UserDefaults.standard.set(on, forKey: "showPhone")
+            self?.phoneItem.isVisible = on
+        })
+        menu.addItem(toggleRow(title: "Show AirPods battery", isOn: showAirpods) { [weak self] on in
+            self?.showAirpods = on
+            UserDefaults.standard.set(on, forKey: "showAirpods")
+            self?.airpodsItem.isVisible = on
+        })
         menu.addItem(toggleRow(title: "Show timer", isOn: showTimer) { [weak self] on in
             self?.showTimer = on
             UserDefaults.standard.set(on, forKey: "showTimer")

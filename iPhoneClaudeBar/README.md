@@ -27,7 +27,7 @@ Toggle with **Play sounds** in the dropdown (persisted; default on).
 
 ## Data source
 
-Read from the local status server on **port 4040** (`~/.claude/statusbar/serve.py`):
+Read from the local status server on **port 4770** (`~/.claude/statusbar/serve.py`):
 
 - `GET /battery` → `phone.{level,charging,present,…}`
 - `GET /status`  → `{state,label,tool,project}`
@@ -49,7 +49,7 @@ open "/Applications/iPhone & Claude.app"
 - **Quit** from the dropdown; reopen from Spotlight/Launchpad.
 - **Start at login** — toggle in the dropdown (macOS 13+); uses `SMAppService` to register the
   app as a login item, so it starts with your Mac.
-- The 4040 server must be running. First launch of an ad-hoc-signed app may need **right-click → Open**.
+- The 4770 server must be running. First launch of an ad-hoc-signed app may need **right-click → Open**.
 
 ## Credits
 
